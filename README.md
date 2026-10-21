@@ -23,13 +23,25 @@ results/    Outputs (not committed; real runs save to Google Drive)
 pip install -r requirements.txt
 ```
 
-The real data goes in `/content/data` on Colab.
+## Data
+
+On Colab, put your Kaggle API key in `~/.kaggle/kaggle.json`, then:
+
+```bash
+python src/data.py
+```
+
+This downloads HAM10000 into `/content/data`, keeps one copy of each image, and
+writes `/content/data/metadata.csv` with image_id, path, dx, label (0-6),
+lesion_id, age, age_band, sex, site_group and malignant.
 
 ## Smoke test (no dataset, no GPU)
 
 ```bash
-python src/fake_data.py --out data_fake
+python src/data.py --smoke
 ```
 
-This writes a tiny fake HAM10000 (40 lesions, ~60 small random images) with the
-same file layout and metadata columns as the real one.
+This writes a tiny fake HAM10000 to `data_fake/` (40 lesions, ~60 small random
+images, same file layout and metadata columns as the real one) and builds
+`metadata.csv` from it. `python src/fake_data.py --out data_fake` makes only the
+fake data.

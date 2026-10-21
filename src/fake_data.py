@@ -6,6 +6,8 @@ code can run on it unchanged:
     <out>/HAM10000_metadata.csv
     <out>/HAM10000_images_part_1/ISIC_xxxxxxx.jpg
     <out>/HAM10000_images_part_2/ISIC_xxxxxxx.jpg
+    <out>/ham10000_images_part_1/...   (duplicate copies, as in the real download)
+    <out>/ham10000_images_part_2/...
 
 The metadata has the same columns as the real file:
     lesion_id, image_id, dx, dx_type, age, sex, localization
@@ -84,17 +86,38 @@ def make_metadata(n_lesions, rng):
 
 
 def write_images(df, out_dir, rng, width, height):
-    """Save one random-noise JPEG per image_id, split over two folders like Kaggle."""
-    part1 = os.path.join(out_dir, "HAM10000_images_part_1")
-    part2 = os.path.join(out_dir, "HAM10000_images_part_2")
-    os.makedirs(part1, exist_ok=True)
-    os.makedirs(part2, exist_ok=True)
+    """Save one random-noise JPEG per image_id, split over two folders like Kaggle.
+
+    The real Kaggle download has every image twice: in HAM10000_images_part_*
+    and again in lowercase ham10000_images_part_*. We copy that, so the code
+    that removes duplicates gets tested too.
+    """
+    for prefix in ["HAM10000", "ham10000"]:
+        for part in [1, 2]:
+            os.makedirs(os.path.join(out_dir, f"{prefix}_images_part_{part}"), exist_ok=True)
 
     for k, image_id in enumerate(df["image_id"]):
         # Random RGB pixels, shape (height, width, 3), values 0-255.
         pixels = rng.integers(0, 256, size=(height, width, 3), dtype=np.uint8)
-        folder = part1 if k % 2 == 0 else part2  # alternate between the two folders
-        Image.fromarray(pixels).save(os.path.join(folder, image_id + ".jpg"))
+        part = 1 if k % 2 == 0 else 2  # alternate between the two folders
+        for prefix in ["HAM10000", "ham10000"]:
+            folder = os.path.join(out_dir, f"{prefix}_images_part_{part}")
+            Image.fromarray(pixels).save(os.path.join(folder, image_id + ".jpg"))
+
+
+def generate(out_dir, n_lesions=40, seed=42, width=64, height=48):
+    """Write the fake dataset to out_dir and return its metadata table."""
+    if n_lesions < 4 * len(CLASSES):
+        raise ValueError(f"n_lesions must be at least {4 * len(CLASSES)}")
+
+    # One random generator, seeded, so the fake data is the same every run.
+    rng = np.random.default_rng(seed)
+
+    os.makedirs(out_dir, exist_ok=True)
+    df = make_metadata(n_lesions, rng)
+    df.to_csv(os.path.join(out_dir, "HAM10000_metadata.csv"), index=False)
+    write_images(df, out_dir, rng, width, height)
+    return df
 
 
 def main():
@@ -107,16 +130,7 @@ def main():
     parser.add_argument("--height", type=int, default=48)
     args = parser.parse_args()
 
-    if args.n_lesions < 4 * len(CLASSES):
-        parser.error(f"--n_lesions must be at least {4 * len(CLASSES)}")
-
-    # One random generator, seeded, so the fake data is the same every run.
-    rng = np.random.default_rng(args.seed)
-
-    os.makedirs(args.out, exist_ok=True)
-    df = make_metadata(args.n_lesions, rng)
-    df.to_csv(os.path.join(args.out, "HAM10000_metadata.csv"), index=False)
-    write_images(df, args.out, rng, args.width, args.height)
+    df = generate(args.out, args.n_lesions, args.seed, args.width, args.height)
 
     print(f"Wrote {len(df)} images from {df['lesion_id'].nunique()} lesions to {args.out}")
     print(df["dx"].value_counts().to_string())
