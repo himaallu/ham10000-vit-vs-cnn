@@ -1,0 +1,8 @@
+torch
+timm
+pandas
+scikit-learn
+pillow
+matplotlib
+kaggle
+grad-cam
