@@ -39,14 +39,15 @@ LOCALIZATIONS = [
 ]
 
 
-def make_metadata(n_lesions, rng):
+def make_metadata(n_lesions, rng, per_class=4):
     """Build the fake metadata table: one row per image."""
-    # Every class gets at least 4 lesions, so stratified splits work.
+    # Every class gets at least `per_class` lesions (default 4), so
+    # stratified splits work.
     # The remaining lesions are "nv", which is also the majority class in
     # the real data.
     lesion_dx = []
     for c in CLASSES:
-        lesion_dx += [c] * 4
+        lesion_dx += [c] * per_class
     lesion_dx += ["nv"] * (n_lesions - len(lesion_dx))
 
     rows = []
@@ -109,16 +110,16 @@ def write_images(df, out_dir, rng, width, height):
             Image.fromarray(pixels).save(os.path.join(folder, image_id + ".jpg"))
 
 
-def generate(out_dir, n_lesions=40, seed=42, width=64, height=48):
+def generate(out_dir, n_lesions=40, seed=42, width=64, height=48, per_class=4):
     """Write the fake dataset to out_dir and return its metadata table."""
-    if n_lesions < 4 * len(CLASSES):
-        raise ValueError(f"n_lesions must be at least {4 * len(CLASSES)}")
+    if n_lesions < per_class * len(CLASSES):
+        raise ValueError(f"n_lesions must be at least {per_class * len(CLASSES)}")
 
     # One random generator, seeded, so the fake data is the same every run.
     rng = np.random.default_rng(seed)
 
     os.makedirs(out_dir, exist_ok=True)
-    df = make_metadata(n_lesions, rng)
+    df = make_metadata(n_lesions, rng, per_class)
     df.to_csv(os.path.join(out_dir, "HAM10000_metadata.csv"), index=False)
     write_images(df, out_dir, rng, width, height)
     return df

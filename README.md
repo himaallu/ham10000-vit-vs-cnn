@@ -91,13 +91,21 @@ images are merged); `class_balanced` = the same sampler over diagnosis only.
 python src/evaluate.py --runs_root /content/drive/MyDrive/ham10000_runs
 ```
 
-For every run folder with a `test_predictions.csv`: macro-F1, per-class F1,
-melanoma recall, and malignant-vs-benign (mel, bcc, akiec) sensitivity and AUROC,
-overall and per age band, sex, site group and seen_lesion. 95% CIs come from a
-bootstrap that resamples lesions, not images. Writes `metrics_overall.csv`,
-`metrics_per_class.csv` and `metrics_subgroups.csv` into each run folder, and
-`summary_all_runs.csv` and `summary_by_run.csv` (mean/std over seeds) into the
-runs folder.
+Reads every run's `test_predictions.csv` and writes to `<runs_root>/evaluation/`:
+
+| File | Content |
+|---|---|
+| `table1_per_seed.csv`, `table1_overall.csv` | macro-F1, per-class F1, melanoma recall, malignant sensitivity/AUROC per run; mean ± SD over seeds |
+| `h1_vit_vs_bit.csv` | H1: ViT (run 2) − BiT (run 1), lesion split |
+| `h2_leaky_vs_fair.csv` | H2: image split − lesion split per model (seed 0) |
+| `h2_seen_vs_unseen.csv` | H2: seen − unseen lesions inside the image-split runs |
+| `h3_subgroups.csv` | H3: malignant sensitivity/AUROC per age band, sex, site group; ViT vs BiT |
+| `h4_group_sensitivity.csv`, `h4_worst_group.csv` | H4: worst-group sensitivity and best−worst gap; balanced (run 5, 5b) − standard (run 2) |
+
+A model's value is the mean of the metric over its seeds. 95% CIs come from 1000
+bootstrap resamples of lesions (not images), shared by all runs on a test set, so
+model differences use a paired bootstrap. H4 only uses groups with at least 10
+malignant test images (`--min_malignant`).
 
 ## Smoke test (no dataset, no GPU)
 
@@ -112,4 +120,4 @@ fake data. `python src/splits.py --smoke` does the same and then splits it. `pyt
 the chain up to the datasets.
 `python src/train.py --config configs/run5_seed0.yaml --smoke` trains 2 epochs
 on CPU with random weights (no download). `python src/evaluate.py --smoke` evaluates fake
-predictions for three fake runs.
+predictions for all runs.

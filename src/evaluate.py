@@ -1,44 +1,52 @@
-"""Evaluate test predictions: overall, per-class and subgroup metrics with CIs.
+"""Evaluate all runs and test the four hypotheses, with lesion-level bootstrap CIs.
 
-Reads <run_dir>/test_predictions.csv (written by train.py) and computes:
-  Overall:   macro-F1, per-class F1, melanoma recall,
-             malignant-vs-benign sensitivity and AUROC
-  Subgroups: malignant-vs-benign sensitivity and AUROC for every
-             age band, sex, site group and seen_lesion value
+Reads every <runs_root>/<run_name>/test_predictions.csv (and its config.yaml)
+written by train.py, and saves these tables to <runs_root>/evaluation/:
 
-Malignant = mel, bcc, akiec.
-  - malignant prediction: the predicted class (argmax) is malignant
-  - malignant score:      prob_mel + prob_bcc + prob_akiec (used for AUROC)
+  table1_per_seed.csv       every run and seed: macro-F1, per-class F1, mel recall,
+                            malignant sensitivity and AUROC
+  table1_overall.csv        the same, as mean and SD over seeds per run
+  h1_vit_vs_bit.csv         H1: ViT (run 2) vs BiT (run 1), lesion split
+  h2_leaky_vs_fair.csv      H2: image split vs lesion split, per model (seed 0)
+  h2_seen_vs_unseen.csv     H2: seen vs unseen lesions inside the image-split runs
+  h3_subgroups.csv          H3: malignant sensitivity/AUROC per subgroup, BiT vs ViT
+  h4_group_sensitivity.csv  H4: malignant sensitivity per subgroup, standard vs balanced
+  h4_worst_group.csv        H4: worst-group sensitivity and best-worst gap
 
-95% confidence intervals come from a bootstrap that resamples LESIONS, not
-images: images of the same lesion are not independent, so they are always
-drawn together. For a subgroup, lesions are resampled within that subgroup.
+Definitions
+  malignant = mel, bcc, akiec.
+  malignant sensitivity: of the truly malignant images, the fraction whose
+                         predicted class is malignant.
+  malignant AUROC:       AUROC of prob_mel + prob_bcc + prob_akiec.
+  A model's value = the MEAN OVER ITS SEEDS of the metric.
 
-Files written to each run folder:
-    metrics_overall.csv     metric, value, ci_low, ci_high, n_valid
-    metrics_per_class.csv   F1 per class with CI
-    metrics_subgroups.csv   counts, sensitivity and AUROC (with CIs) per group
-And, when --runs_root is used, to the runs folder:
-    summary_all_runs.csv    one row per run folder
-    summary_by_run.csv      mean and std over seeds for each run
+Bootstrap (95% CIs)
+  For each test set we draw n_boot resamples of LESIONS (with replacement; all
+  images of a drawn lesion come along) and reuse the same resamples for every
+  statistic. So when two models share a test set, each resample scores both
+  on the same lesions: a paired bootstrap, the right one for a difference.
+  Subgroup statistics use the subgroup's images inside each resample.
+  Lesion-split and image-split runs have different test sets; their
+  comparison (H2 leaky vs fair) uses independent resamples of each.
 
 Usage (Colab):
     python src/evaluate.py --runs_root /content/drive/MyDrive/ham10000_runs
-    python src/evaluate.py --run_dir /content/drive/MyDrive/ham10000_runs/run1_bit_lesion_standard_seed0
     python src/evaluate.py --smoke
 """
 
 import argparse
 import os
-import re
+import warnings
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import f1_score, roc_auc_score
+import yaml
+from scipy.stats import rankdata
 
 from data import AGE_BANDS, CLASSES, MALIGNANT, SITE_ORDER
 
-MAL_LABELS = [CLASSES.index(c) for c in MALIGNANT]   # [4, 1, 0]
+N_CLASSES = len(CLASSES)
+MAL_LABELS = [CLASSES.index(c) for c in MALIGNANT]
 MEL = CLASSES.index("mel")
 
 # Subgroup columns and the order their groups are shown in.
@@ -46,187 +54,348 @@ SUBGROUPS = {
     "age_band": AGE_BANDS,
     "sex": ["male", "female", "unknown"],
     "site_group": SITE_ORDER,
-    "seen_lesion": [False, True],
 }
 
 
 # ----------------------------------------------------------------------------
-# Metrics. Each takes a predictions table and returns one number (or NaN if
-# the metric can't be computed on that table).
+# Metrics. Each takes numpy arrays (true labels, predicted labels, malignant
+# score) and returns one number, or NaN if it can't be computed (for example
+# no malignant images in a bootstrap sample). Written with numpy instead of
+# sklearn because they run hundreds of thousands of times in the bootstrap.
 # ----------------------------------------------------------------------------
 
-def macro_f1(df):
-    """Mean F1 over the classes that appear (as true or predicted label).
+def f1_per_class(y_true, y_pred):
+    """F1 of each class; NaN for a class that appears neither as true nor predicted."""
+    # Confusion matrix: cm[t, p] = number of images with true class t, predicted p.
+    cm = np.bincount(y_true * N_CLASSES + y_pred, minlength=N_CLASSES ** 2).reshape(N_CLASSES, N_CLASSES)
+    tp = np.diag(cm)
+    fp = cm.sum(axis=0) - tp   # predicted as the class, but wrong
+    fn = cm.sum(axis=1) - tp   # truly the class, but missed
+    denom = 2 * tp + fp + fn
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(denom > 0, 2 * tp / denom, np.nan)
 
-    On the full test set all 7 classes appear, so this is the usual 7-class
-    macro-F1. In a bootstrap sample a rare class can be missing completely;
-    counting it as F1 = 0 would wrongly pull the CI down, so it is left out.
-    """
-    return f1_score(df["y_true"], df["y_pred"], average="macro", zero_division=0)
+
+def macro_f1(y_true, y_pred, score):
+    """Mean F1 over the classes that appear (on the full test set: all 7)."""
+    f1 = f1_per_class(y_true, y_pred)
+    return np.nan if np.all(np.isnan(f1)) else np.nanmean(f1)
 
 
 def class_f1(k):
-    """Return a metric function: F1 of class k (one-vs-rest).
-
-    NaN if class k has no true images in the table (F1 is then meaningless).
-    """
-    def f1_of_class(df):
-        if (df["y_true"] == k).sum() == 0:
+    """Return a metric: F1 of class k; NaN if class k has no true images."""
+    def metric(y_true, y_pred, score):
+        if not np.any(y_true == k):
             return np.nan
-        return f1_score(df["y_true"] == k, df["y_pred"] == k, zero_division=0)
-    return f1_of_class
+        return f1_per_class(y_true, y_pred)[k]
+    return metric
 
 
-def mel_recall(df):
+def mel_recall(y_true, y_pred, score):
     """Of the true melanomas, the fraction predicted as melanoma."""
-    is_mel = df["y_true"] == MEL
-    if is_mel.sum() == 0:
-        return np.nan
-    return (df.loc[is_mel, "y_pred"] == MEL).mean()
+    is_mel = y_true == MEL
+    return np.mean(y_pred[is_mel] == MEL) if is_mel.any() else np.nan
 
 
-def malignant_sensitivity(df):
+def malignant_sensitivity(y_true, y_pred, score):
     """Of the truly malignant images, the fraction predicted as any malignant class."""
-    is_mal = df["y_true"].isin(MAL_LABELS)
-    if is_mal.sum() == 0:
+    is_mal = np.isin(y_true, MAL_LABELS)
+    return np.mean(np.isin(y_pred[is_mal], MAL_LABELS)) if is_mal.any() else np.nan
+
+
+def malignant_auroc(y_true, y_pred, score):
+    """AUROC of the malignant score (Mann-Whitney formula, ties count half)."""
+    is_mal = np.isin(y_true, MAL_LABELS)
+    n_pos, n_neg = is_mal.sum(), (~is_mal).sum()
+    if n_pos == 0 or n_neg == 0:
         return np.nan
-    return df.loc[is_mal, "y_pred"].isin(MAL_LABELS).mean()
+    ranks = rankdata(score)  # 1 = lowest score; tied scores share their average rank
+    return (ranks[is_mal].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
 
 
-def malignant_score(df):
-    """Probability of 'malignant' = sum of the 3 malignant class probabilities."""
-    return df[[f"prob_{c}" for c in MALIGNANT]].sum(axis=1)
-
-
-def malignant_auroc(df):
-    """AUROC of the malignant score; NaN if only one of the two outcomes is present."""
-    is_mal = df["y_true"].isin(MAL_LABELS)
-    if is_mal.nunique() < 2:
-        return np.nan
-    return roc_auc_score(is_mal, malignant_score(df))
+HEADLINE = {"macro_f1": macro_f1, "mel_recall": mel_recall,
+            "malignant_sensitivity": malignant_sensitivity, "malignant_auroc": malignant_auroc}
+ALL_METRICS = {"macro_f1": macro_f1,
+               **{f"f1_{c}": class_f1(k) for k, c in enumerate(CLASSES)},
+               "mel_recall": mel_recall,
+               "malignant_sensitivity": malignant_sensitivity,
+               "malignant_auroc": malignant_auroc}
 
 
 # ----------------------------------------------------------------------------
-# Lesion-level bootstrap
+# Loading runs
 # ----------------------------------------------------------------------------
 
-def lesion_bootstrap(df, metric, n_boot, seed):
-    """Value of `metric` on df, plus a 95% CI from resampling lesions.
+class TestSet:
+    """The test images of one split, shared by every run on that split."""
 
-    Each bootstrap sample draws as many lesions as df has, WITH replacement,
-    and takes all images of every drawn lesion (a lesion drawn twice
-    contributes its images twice).
+    def __init__(self, preds):
+        # Sort by image_id so all runs' predictions line up row by row.
+        table = preds.sort_values("image_id").reset_index(drop=True)
+        self.table = table[["image_id", "lesion_id", "y_true", "age_band", "sex",
+                            "site_group", "seen_lesion"]]
+        self.y_true = table["y_true"].to_numpy()
+        self.all_rows = np.arange(len(table))
+        self.samples = []  # bootstrap resamples (row indices), filled by draw_bootstrap
 
-    Returns (value, ci_low, ci_high, n_valid), where n_valid is the number of
-    bootstrap samples on which the metric could be computed.
+    def draw_bootstrap(self, n_boot, seed):
+        """Draw n_boot lesion resamples; each is an array of row indices."""
+        rows_of_lesion = list(self.table.groupby("lesion_id").indices.values())
+        n_lesions = len(rows_of_lesion)
+        rng = np.random.default_rng(seed)
+        self.samples = []
+        for _ in range(n_boot):
+            picked = rng.integers(0, n_lesions, size=n_lesions)  # with repeats
+            self.samples.append(np.concatenate([rows_of_lesion[i] for i in picked]))
+
+    def rows_where(self, column, value):
+        """Boolean mask: which rows belong to a subgroup."""
+        return (self.table[column] == value).to_numpy()
+
+
+def load_runs(runs_root):
+    """Return (runs, test_sets).
+
+    runs:      {run id: {"model", "split", "mode", "seeds": {seed: (y_pred, score)}}}
+               e.g. runs["run2"]["seeds"][0] = predictions of ViT seed 0
+    test_sets: {"lesion": TestSet, "image": TestSet}
     """
-    value = metric(df)
+    runs, test_sets = {}, {}
+    for name in sorted(os.listdir(runs_root)):
+        folder = os.path.join(runs_root, name)
+        pred_path = os.path.join(folder, "test_predictions.csv")
+        if not os.path.exists(pred_path):
+            continue
+        with open(os.path.join(folder, "config.yaml")) as f:
+            cfg = yaml.safe_load(f)
+        preds = pd.read_csv(pred_path).sort_values("image_id").reset_index(drop=True)
 
-    # Row positions of each lesion's images, computed once.
-    rows_of_lesion = list(df.groupby("lesion_id").indices.values())
-    n_lesions = len(rows_of_lesion)
+        split = cfg["split"]
+        if split not in test_sets:
+            test_sets[split] = TestSet(preds)
+        # Every run on a split must have exactly the same test images.
+        ts = test_sets[split]
+        assert (preds["image_id"].to_numpy() == ts.table["image_id"].to_numpy()).all(), \
+            f"{name}: test images differ from other {split}-split runs"
+        assert (preds["y_true"].to_numpy() == ts.y_true).all(), f"{name}: labels differ"
 
-    rng = np.random.default_rng(seed)
-    boot_values = []
-    for _ in range(n_boot):
-        picked = rng.integers(0, n_lesions, size=n_lesions)  # lesion numbers, with repeats
-        rows = np.concatenate([rows_of_lesion[i] for i in picked])
-        v = metric(df.iloc[rows])
-        if not np.isnan(v):
-            boot_values.append(v)
+        run_id = name.split("_")[0]  # "run2_vit_lesion_standard_seed0" -> "run2"
+        run = runs.setdefault(run_id, {"model": cfg["model"], "split": split,
+                                       "mode": cfg["mode"], "seeds": {}})
+        score = preds[[f"prob_{c}" for c in MALIGNANT]].sum(axis=1).to_numpy()
+        run["seeds"][int(cfg["seed"])] = (preds["y_pred"].to_numpy(), score)
 
-    if len(boot_values) == 0:
-        return value, np.nan, np.nan, 0
-    low, high = np.percentile(boot_values, [2.5, 97.5])
-    return value, low, high, len(boot_values)
-
-
-# ----------------------------------------------------------------------------
-# Evaluate one run
-# ----------------------------------------------------------------------------
-
-def evaluate_run(run_dir, n_boot, seed):
-    """Compute all metrics for one run folder and save them there."""
-    df = pd.read_csv(os.path.join(run_dir, "test_predictions.csv"))
-
-    def row(name, metric, data):
-        value, low, high, n_valid = lesion_bootstrap(data, metric, n_boot, seed)
-        return {"metric": name, "value": value, "ci_low": low, "ci_high": high, "n_valid": n_valid}
-
-    overall = pd.DataFrame([
-        row("macro_f1", macro_f1, df),
-        row("mel_recall", mel_recall, df),
-        row("malignant_sensitivity", malignant_sensitivity, df),
-        row("malignant_auroc", malignant_auroc, df),
-    ])
-    overall.to_csv(os.path.join(run_dir, "metrics_overall.csv"), index=False)
-
-    per_class = pd.DataFrame([row(f"f1_{c}", class_f1(k), df) for k, c in enumerate(CLASSES)])
-    per_class.insert(0, "class", CLASSES)
-    per_class = per_class.drop(columns="metric")
-    per_class.to_csv(os.path.join(run_dir, "metrics_per_class.csv"), index=False)
-
-    sub_rows = []
-    for column, order in SUBGROUPS.items():
-        for group in order:
-            part = df[df[column] == group]
-            if len(part) == 0:
-                continue
-            sens = lesion_bootstrap(part, malignant_sensitivity, n_boot, seed)
-            auc = lesion_bootstrap(part, malignant_auroc, n_boot, seed)
-            sub_rows.append({
-                "column": column, "group": group,
-                "n_images": len(part),
-                "n_lesions": part["lesion_id"].nunique(),
-                "n_malignant": int(part["y_true"].isin(MAL_LABELS).sum()),
-                "sensitivity": sens[0], "sens_ci_low": sens[1], "sens_ci_high": sens[2],
-                "auroc": auc[0], "auroc_ci_low": auc[1], "auroc_ci_high": auc[2],
-                "auroc_n_valid": auc[3],
-            })
-    subgroups = pd.DataFrame(sub_rows)
-    subgroups.to_csv(os.path.join(run_dir, "metrics_subgroups.csv"), index=False)
-
-    return overall, per_class, subgroups
-
-
-def print_run(name, overall, per_class, subgroups):
-    """Print one run's results as compact tables."""
-    fmt = lambda x: f"{x:.3f}"
-    print(f"\n===== {name} =====")
-    print(overall.to_string(index=False, float_format=fmt))
-    print()
-    print(per_class.to_string(index=False, float_format=fmt))
-    print()
-    cols = ["column", "group", "n_images", "n_lesions", "n_malignant",
-            "sensitivity", "sens_ci_low", "sens_ci_high", "auroc", "auroc_ci_low", "auroc_ci_high"]
-    print(subgroups[cols].to_string(index=False, float_format=fmt))
+    for run_id, run in runs.items():
+        print(f"{run_id}: {run['model']} / {run['split']} / {run['mode']} / "
+              f"seeds {sorted(run['seeds'])}")
+    return runs, test_sets
 
 
 # ----------------------------------------------------------------------------
-# Summaries across runs
+# Statistics and the bootstrap
 # ----------------------------------------------------------------------------
 
-def summarise_runs(results):
-    """results: {run_name: overall table}. Returns (all runs table, by-run table)."""
+def run_value(run, ts, metric, rows, seeds=None):
+    """Metric of one run on the given rows, averaged over its seeds."""
+    seeds = sorted(run["seeds"]) if seeds is None else seeds
+    values = []
+    for s in seeds:
+        y_pred, score = run["seeds"][s]
+        values.append(metric(ts.y_true[rows], y_pred[rows], score[rows]))
+    values = np.array(values, dtype=float)
+    return np.nan if np.all(np.isnan(values)) else np.nanmean(values)
+
+
+def bootstrap(stat, ts, ts_b=None):
+    """Point estimate and 95% CI for a statistic that returns an array.
+
+    stat(rows) -> array of numbers. With a second test set ts_b,
+    stat(rows, rows_b) is called with one resample of each (independent).
+    Returns (point, ci_low, ci_high), each an array like stat's output.
+    """
+    # numpy warns about NaN values (e.g. no malignant images in a small
+    # resample); NaN is the intended result there, so hide those warnings.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        if ts_b is None:
+            point = stat(ts.all_rows)
+            boots = np.array([stat(rows) for rows in ts.samples])
+        else:
+            point = stat(ts.all_rows, ts_b.all_rows)
+            boots = np.array([stat(r, rb) for r, rb in zip(ts.samples, ts_b.samples)])
+        # Resamples where a value could not be computed (NaN) are left out.
+        low, high = np.nanpercentile(boots, [2.5, 97.5], axis=0)
+    return np.asarray(point, dtype=float), low, high
+
+
+def compare_row(a_name, b_name, point, low, high):
+    """Turn [a, b, a-b] bootstrap results into one table row."""
+    return {a_name: point[0], f"{a_name}_ci_low": low[0], f"{a_name}_ci_high": high[0],
+            b_name: point[1], f"{b_name}_ci_low": low[1], f"{b_name}_ci_high": high[1],
+            "diff": point[2], "diff_ci_low": low[2], "diff_ci_high": high[2]}
+
+
+# ----------------------------------------------------------------------------
+# The tables
+# ----------------------------------------------------------------------------
+
+def table1(runs, test_sets):
+    """Per-seed metrics, and mean and SD over seeds, for every run."""
     rows = []
-    for run_name, overall in results.items():
-        # run_name looks like "run1_bit_lesion_standard_seed0".
-        match = re.match(r"(run\w+?)_.*_seed(\d+)$", run_name)
-        r = {"run_name": run_name,
-             "run": match.group(1) if match else run_name,
-             "seed": int(match.group(2)) if match else np.nan}
-        for _, m in overall.iterrows():
-            r[m["metric"]] = m["value"]
-            r[m["metric"] + "_ci"] = f"[{m['ci_low']:.3f}, {m['ci_high']:.3f}]"
-        rows.append(r)
-    all_runs = pd.DataFrame(rows).sort_values(["run", "seed"])
+    for run_id, run in sorted(runs.items()):
+        ts = test_sets[run["split"]]
+        for seed in sorted(run["seeds"]):
+            r = {"run": run_id, "model": run["model"], "split": run["split"],
+                 "mode": run["mode"], "seed": seed}
+            for name, metric in ALL_METRICS.items():
+                r[name] = run_value(run, ts, metric, ts.all_rows, seeds=[seed])
+            rows.append(r)
+    per_seed = pd.DataFrame(rows)
 
-    # Mean and standard deviation over seeds (std is NaN for a single seed).
-    metrics = ["macro_f1", "mel_recall", "malignant_sensitivity", "malignant_auroc"]
-    by_run = all_runs.groupby("run")[metrics].agg(["mean", "std"])
-    by_run.columns = [f"{m}_{stat}" for m, stat in by_run.columns]
-    by_run.insert(0, "n_seeds", all_runs.groupby("run").size())
-    return all_runs, by_run
+    keys = ["run", "model", "split", "mode"]
+    grouped = per_seed.groupby(keys)[list(ALL_METRICS)]
+    overall = grouped.mean().add_suffix("_mean").join(grouped.std().add_suffix("_sd"))  # SD: NaN for 1 seed
+    # Put each metric's mean and SD side by side.
+    overall = overall[[f"{m}_{s}" for m in ALL_METRICS for s in ["mean", "sd"]]]
+    overall.insert(0, "n_seeds", per_seed.groupby(keys).size())
+    return per_seed, overall.reset_index()
+
+
+def h1_vit_vs_bit(runs, test_sets):
+    """ViT (run 2) minus BiT (run 1) on the lesion split, paired bootstrap."""
+    vit, bit, ts = runs["run2"], runs["run1"], test_sets["lesion"]
+    rows = []
+    for name, metric in HEADLINE.items():
+        def stat(r):
+            a, b = run_value(vit, ts, metric, r), run_value(bit, ts, metric, r)
+            return [a, b, a - b]
+        rows.append({"metric": name, **compare_row("vit", "bit", *bootstrap(stat, ts))})
+    return pd.DataFrame(rows)
+
+
+def h2_leaky_vs_fair(runs, test_sets):
+    """Image split (leaky) minus lesion split (fair), per model, seed 0 on both sides."""
+    rows = []
+    for model, leaky_id, fair_id in [("bit", "run3", "run1"), ("vit", "run4", "run2")]:
+        if leaky_id not in runs or fair_id not in runs:
+            continue
+        leaky, fair = runs[leaky_id], runs[fair_id]
+        for name, metric in HEADLINE.items():
+            def stat(r_img, r_les):
+                a = run_value(leaky, test_sets["image"], metric, r_img, seeds=[0])
+                b = run_value(fair, test_sets["lesion"], metric, r_les, seeds=[0])
+                return [a, b, a - b]
+            result = bootstrap(stat, test_sets["image"], test_sets["lesion"])
+            rows.append({"model": model, "metric": name, **compare_row("leaky", "fair", *result)})
+    return pd.DataFrame(rows)
+
+
+def h2_seen_vs_unseen(runs, test_sets):
+    """Inside each image-split run: seen-lesion minus unseen-lesion test images."""
+    ts = test_sets["image"]
+    seen = ts.rows_where("seen_lesion", True)
+    rows = []
+    for run_id in ["run3", "run4"]:
+        if run_id not in runs:
+            continue
+        run = runs[run_id]
+        for name, metric in HEADLINE.items():
+            def stat(r):
+                a = run_value(run, ts, metric, r[seen[r]])    # resampled rows that are seen
+                b = run_value(run, ts, metric, r[~seen[r]])   # ... and unseen
+                return [a, b, a - b]
+            rows.append({"run": run_id, "model": run["model"], "metric": name,
+                         "n_seen_images": int(seen.sum()), "n_unseen_images": int((~seen).sum()),
+                         **compare_row("seen", "unseen", *bootstrap(stat, ts))})
+    return pd.DataFrame(rows)
+
+
+def group_counts(ts, mask):
+    return {"n_images": int(mask.sum()),
+            "n_lesions": ts.table.loc[mask, "lesion_id"].nunique(),
+            "n_malignant": int(np.isin(ts.y_true[mask], MAL_LABELS).sum())}
+
+
+def h3_subgroups(runs, test_sets):
+    """Malignant sensitivity and AUROC per subgroup: ViT (run 2) vs BiT (run 1)."""
+    vit, bit, ts = runs["run2"], runs["run1"], test_sets["lesion"]
+    rows = []
+    for column, groups in SUBGROUPS.items():
+        for group in groups:
+            mask = ts.rows_where(column, group)
+            if not mask.any():
+                continue
+            for name, metric in [("sensitivity", malignant_sensitivity), ("auroc", malignant_auroc)]:
+                def stat(r):
+                    r = r[mask[r]]  # this subgroup's images in the resample
+                    a, b = run_value(vit, ts, metric, r), run_value(bit, ts, metric, r)
+                    return [a, b, a - b]
+                rows.append({"column": column, "group": group, **group_counts(ts, mask),
+                             "metric": name, **compare_row("vit", "bit", *bootstrap(stat, ts))})
+    return pd.DataFrame(rows)
+
+
+def h4_balanced(runs, test_sets, min_malignant):
+    """Worst-group sensitivity and best-worst gap: standard (run 2) vs balanced runs.
+
+    "variant" is the balanced run being compared: run 5 (comparison
+    "balanced") or run 5b (comparison "class_balanced"); diff = variant - standard.
+    Only groups with at least min_malignant malignant test images take part
+    in the worst/best comparison (decided once, on the full test set).
+    """
+    ts = test_sets["lesion"]
+    standard = runs["run2"]
+    comparisons = [(mode_name, runs[run_id]) for mode_name, run_id
+                   in [("balanced", "run5"), ("class_balanced", "run5b")] if run_id in runs]
+
+    group_rows, worst_rows = [], []
+    for column, groups in SUBGROUPS.items():
+        masks = {g: ts.rows_where(column, g) for g in groups}
+        masks = {g: m for g, m in masks.items() if m.any()}
+        eligible = [g for g, m in masks.items()
+                    if np.isin(ts.y_true[m], MAL_LABELS).sum() >= min_malignant]
+
+        def group_sens(run, r):
+            """Sensitivity of every group, on resampled rows r."""
+            return np.array([run_value(run, ts, malignant_sensitivity, r[masks[g][r]]) for g in masks])
+
+        for mode_name, balanced in comparisons:
+            # Per-group sensitivity, standard vs this balanced mode.
+            def stat_groups(r):
+                s, b = group_sens(standard, r), group_sens(balanced, r)
+                return np.concatenate([s, b, b - s])
+            point, low, high = bootstrap(stat_groups, ts)
+            n = len(masks)
+            for i, g in enumerate(masks):
+                group_rows.append({"comparison": mode_name, "column": column, "group": g,
+                                   **group_counts(ts, masks[g]), "eligible": g in eligible,
+                                   **compare_row("standard", "variant",
+                                                 point[[i, n + i, 2 * n + i]],
+                                                 low[[i, n + i, 2 * n + i]],
+                                                 high[[i, n + i, 2 * n + i]])})
+            if len(eligible) < 2:
+                print(f"H4 {column}: fewer than 2 groups with >= {min_malignant} malignant images, skipped")
+                continue
+
+            # Worst group and best-worst gap, using eligible groups only.
+            idx = [list(masks).index(g) for g in eligible]
+
+            def stat_worst(r):
+                s, b = group_sens(standard, r)[idx], group_sens(balanced, r)[idx]
+                s_worst, b_worst = np.nanmin(s), np.nanmin(b)
+                s_gap, b_gap = np.nanmax(s) - s_worst, np.nanmax(b) - b_worst
+                return [s_worst, b_worst, b_worst - s_worst, s_gap, b_gap, b_gap - s_gap]
+            point, low, high = bootstrap(stat_worst, ts)
+            s_full, b_full = group_sens(standard, ts.all_rows)[idx], group_sens(balanced, ts.all_rows)[idx]
+            for j, quantity in enumerate(["worst_group_sensitivity", "best_worst_gap"]):
+                k = [3 * j, 3 * j + 1, 3 * j + 2]
+                worst_rows.append({
+                    "comparison": mode_name, "column": column, "quantity": quantity,
+                    "groups_used": ", ".join(map(str, eligible)),
+                    "standard_worst_group": eligible[int(np.nanargmin(s_full))],
+                    "variant_worst_group": eligible[int(np.nanargmin(b_full))],
+                    **compare_row("standard", "variant", point[k], low[k], high[k])})
+    return pd.DataFrame(group_rows), pd.DataFrame(worst_rows)
 
 
 # ----------------------------------------------------------------------------
@@ -234,36 +403,45 @@ def summarise_runs(results):
 # ----------------------------------------------------------------------------
 
 def make_smoke_runs(root):
-    """Write fake test_predictions.csv files for a few fake runs."""
-    import fake_data
+    """Fake predictions for every run, on a larger fake dataset (400 lesions, 40+ per class)."""
     import data
+    import fake_data
     import splits
 
     work = "data_fake"
-    fake_data.generate(work)
+    fake_data.generate(work, n_lesions=400, per_class=40)  # enough malignant lesions for subgroups
     meta = data.build_metadata(work)
-    for run_name, split_fn in [("run1_bit_lesion_standard_seed0", splits.lesion_level_split),
-                               ("run1_bit_lesion_standard_seed1", splits.lesion_level_split),
-                               ("run3_bit_image_standard_seed0", splits.image_level_split)]:
-        seed = int(run_name[-1])
-        test = split_fn(meta, seed=42)
-        test = test[test["split"] == "test"].reset_index(drop=True)
+    tests = {"lesion": splits.lesion_level_split(meta, seed=42),
+             "image": splits.image_level_split(meta, seed=42)}
+    tests = {k: v[v["split"] == "test"].reset_index(drop=True) for k, v in tests.items()}
 
-        # Probabilities that lean towards the true class, so metrics are not 0.
-        rng = np.random.default_rng(seed)
-        probs = rng.random((len(test), len(CLASSES)))
-        probs[np.arange(len(test)), test["label"]] += 0.4
-        probs /= probs.sum(axis=1, keepdims=True)
-
-        preds = pd.DataFrame({"image_id": test["image_id"], "lesion_id": test["lesion_id"],
-                              "y_true": test["label"], "y_pred": probs.argmax(axis=1)})
-        for k, c in enumerate(CLASSES):
-            preds[f"prob_{c}"] = probs[:, k]
-        for column in ["age_band", "sex", "site_group", "seen_lesion"]:
-            preds[column] = test[column]
-
-        os.makedirs(os.path.join(root, run_name), exist_ok=True)
-        preds.to_csv(os.path.join(root, run_name, "test_predictions.csv"), index=False)
+    # (run id, model, split, mode, seeds, how strongly probs lean to the truth)
+    fake_runs = [("run1", "bit", "lesion", "standard", [0, 1, 2], 0.5),
+                 ("run2", "vit", "lesion", "standard", [0, 1, 2], 0.7),
+                 ("run3", "bit", "image", "standard", [0], 0.5),
+                 ("run4", "vit", "image", "standard", [0], 0.7),
+                 ("run5", "vit", "lesion", "balanced", [0, 1, 2], 0.7)]
+    for run_id, model, split, mode, seeds, strength in fake_runs:
+        test = tests[split]
+        for seed in seeds:
+            rng = np.random.default_rng(hash((run_id, seed)) % 2**32)
+            probs = rng.random((len(test), N_CLASSES))
+            boost = strength + 0.8 * test["seen_lesion"].to_numpy()  # leakage: seen lesions are easier
+            probs[np.arange(len(test)), test["label"]] += boost
+            probs /= probs.sum(axis=1, keepdims=True)
+            preds = pd.DataFrame({"image_id": test["image_id"], "lesion_id": test["lesion_id"],
+                                  "y_true": test["label"], "y_pred": probs.argmax(axis=1)})
+            for k, c in enumerate(CLASSES):
+                preds[f"prob_{c}"] = probs[:, k]
+            for column in ["age_band", "sex", "site_group", "seen_lesion"]:
+                preds[column] = test[column]
+            run_name = f"{run_id}_{model}_{split}_{mode}_seed{seed}"
+            folder = os.path.join(root, run_name)
+            os.makedirs(folder, exist_ok=True)
+            preds.to_csv(os.path.join(folder, "test_predictions.csv"), index=False)
+            with open(os.path.join(folder, "config.yaml"), "w") as f:
+                yaml.safe_dump({"run_name": run_name, "model": model, "split": split,
+                                "mode": mode, "seed": seed}, f)
 
 
 # ----------------------------------------------------------------------------
@@ -271,46 +449,57 @@ def make_smoke_runs(root):
 # ----------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate test predictions with lesion-level bootstrap CIs.")
-    parser.add_argument("--runs_root", default=None,
-                        help="evaluate every subfolder that has a test_predictions.csv")
-    parser.add_argument("--run_dir", default=None, help="evaluate a single run folder")
+    parser = argparse.ArgumentParser(description="Evaluate all runs and the four hypotheses.")
+    parser.add_argument("--runs_root", default="/content/drive/MyDrive/ham10000_runs")
+    parser.add_argument("--out_dir", default=None, help="default: <runs_root>/evaluation")
     parser.add_argument("--n_boot", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0, help="seed for the bootstrap")
+    parser.add_argument("--min_malignant", type=int, default=10,
+                        help="H4: groups need this many malignant test images to count")
     parser.add_argument("--smoke", action="store_true", help="evaluate fake predictions")
     args = parser.parse_args()
 
     if args.smoke:
         args.runs_root = os.path.join("data_fake", "runs_eval")
         args.n_boot = 200
+        args.min_malignant = 3
         make_smoke_runs(args.runs_root)
 
-    if args.run_dir:
-        run_dirs = [args.run_dir]
-    elif args.runs_root:
-        run_dirs = sorted(
-            os.path.join(args.runs_root, d) for d in os.listdir(args.runs_root)
-            if os.path.exists(os.path.join(args.runs_root, d, "test_predictions.csv")))
+    out_dir = args.out_dir or os.path.join(args.runs_root, "evaluation")
+    os.makedirs(out_dir, exist_ok=True)
+
+    runs, test_sets = load_runs(args.runs_root)
+    for ts in test_sets.values():
+        ts.draw_bootstrap(args.n_boot, args.seed)
+    print(f"{args.n_boot} lesion bootstrap samples per test set\n")
+
+    def save(df, name):
+        df.to_csv(os.path.join(out_dir, name), index=False)
+        print(f"===== {name} =====")
+        print(df.to_string(index=False, float_format=lambda x: f"{x:.3f}"), "\n")
+
+    per_seed, overall = table1(runs, test_sets)
+    save(per_seed, "table1_per_seed.csv")
+    save(overall, "table1_overall.csv")
+
+    have = lambda *ids: all(i in runs for i in ids)
+    if have("run1", "run2"):
+        save(h1_vit_vs_bit(runs, test_sets), "h1_vit_vs_bit.csv")
+        save(h3_subgroups(runs, test_sets), "h3_subgroups.csv")
     else:
-        parser.error("give --runs_root or --run_dir (or --smoke)")
-    print(f"Evaluating {len(run_dirs)} run(s) with {args.n_boot} lesion bootstrap samples")
-
-    results = {}
-    for run_dir in run_dirs:
-        name = os.path.basename(os.path.normpath(run_dir))
-        overall, per_class, subgroups = evaluate_run(run_dir, args.n_boot, args.seed)
-        print_run(name, overall, per_class, subgroups)
-        results[name] = overall
-
-    if args.runs_root and not args.run_dir:
-        all_runs, by_run = summarise_runs(results)
-        all_runs.to_csv(os.path.join(args.runs_root, "summary_all_runs.csv"), index=False)
-        by_run.to_csv(os.path.join(args.runs_root, "summary_by_run.csv"))
-        print("\n===== All runs =====")
-        print(all_runs.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
-        print("\n===== Mean and std over seeds =====")
-        print(by_run.to_string(float_format=lambda x: f"{x:.3f}"))
-        print(f"\nSaved summary_all_runs.csv and summary_by_run.csv to {args.runs_root}")
+        print("H1/H3 skipped: need run1 and run2\n")
+    if have("run1", "run3") or have("run2", "run4"):
+        save(h2_leaky_vs_fair(runs, test_sets), "h2_leaky_vs_fair.csv")
+        save(h2_seen_vs_unseen(runs, test_sets), "h2_seen_vs_unseen.csv")
+    else:
+        print("H2 skipped: need an image-split run and its lesion-split partner\n")
+    if have("run2") and (have("run5") or have("run5b")):
+        groups, worst = h4_balanced(runs, test_sets, args.min_malignant)
+        save(groups, "h4_group_sensitivity.csv")
+        save(worst, "h4_worst_group.csv")
+    else:
+        print("H4 skipped: need run2 and run5 (or run5b)\n")
+    print(f"Saved tables to {out_dir}")
 
 
 if __name__ == "__main__":
