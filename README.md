@@ -85,6 +85,20 @@ where every diagnosis gets an equal share and, inside a diagnosis, every
 age band x site group cell gets an equal share (cells under `min_cell_size`
 images are merged); `class_balanced` = the same sampler over diagnosis only.
 
+## Evaluation
+
+```bash
+python src/evaluate.py --runs_root /content/drive/MyDrive/ham10000_runs
+```
+
+For every run folder with a `test_predictions.csv`: macro-F1, per-class F1,
+melanoma recall, and malignant-vs-benign (mel, bcc, akiec) sensitivity and AUROC,
+overall and per age band, sex, site group and seen_lesion. 95% CIs come from a
+bootstrap that resamples lesions, not images. Writes `metrics_overall.csv`,
+`metrics_per_class.csv` and `metrics_subgroups.csv` into each run folder, and
+`summary_all_runs.csv` and `summary_by_run.csv` (mean/std over seeds) into the
+runs folder.
+
 ## Smoke test (no dataset, no GPU)
 
 ```bash
@@ -97,4 +111,5 @@ images, same file layout and metadata columns as the real one) and builds
 fake data. `python src/splits.py --smoke` does the same and then splits it. `python src/preprocess.py --smoke` and `python src/dataset.py --smoke` run
 the chain up to the datasets.
 `python src/train.py --config configs/run5_seed0.yaml --smoke` trains 2 epochs
-on CPU with random weights (no download).
+on CPU with random weights (no download). `python src/evaluate.py --smoke` evaluates fake
+predictions for three fake runs.
