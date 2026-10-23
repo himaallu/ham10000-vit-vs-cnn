@@ -17,6 +17,13 @@ notebooks/  Colab notebooks
 results/    Outputs (not committed; real runs save to Google Drive)
 ```
 
+## Running on Colab
+
+Open `notebooks/run_colab.ipynb` in Colab (GPU runtime) and run it top to bottom.
+It mounts Drive, clones the repo, installs requirements, sets up `kaggle.json`,
+prepares the data once (cached on Drive in `MyDrive/ham10000_data`), offers a quick
+learning-rate check (train + val only) and trains the config you choose.
+
 ## Setup
 
 ```bash
