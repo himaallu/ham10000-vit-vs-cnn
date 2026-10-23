@@ -47,6 +47,19 @@ leak) next to `metadata.csv`. Both add a `split` column (train/val/test) and a
 `seen_lesion` column (another image of the same lesion is in train). Use
 `--out_dir` to save them elsewhere, e.g. on Google Drive.
 
+## Resize cache and datasets
+
+```bash
+python src/preprocess.py
+python src/dataset.py --split_csv /content/data/split_lesion.csv --model vit
+```
+
+`preprocess.py` resizes every image once to short side 256 into
+`/content/data/images_256/`. `dataset.py` defines the PyTorch `Dataset` (train:
+rotation, random resized crop 224, flips, colour jitter; val/test: center crop
+224; mean/std from each timm model's config), checks one batch per partition
+and saves a grid of 8 augmented training images.
+
 ## Smoke test (no dataset, no GPU)
 
 ```bash
@@ -56,4 +69,5 @@ python src/data.py --smoke
 This writes a tiny fake HAM10000 to `data_fake/` (40 lesions, ~60 small random
 images, same file layout and metadata columns as the real one) and builds
 `metadata.csv` from it. `python src/fake_data.py --out data_fake` makes only the
-fake data. `python src/splits.py --smoke` does the same and then splits it.
+fake data. `python src/splits.py --smoke` does the same and then splits it. `python src/preprocess.py --smoke` and `python src/dataset.py --smoke` run
+the chain up to the datasets.

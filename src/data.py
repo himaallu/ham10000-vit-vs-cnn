@@ -70,9 +70,11 @@ def download(data_dir):
 
 def find_image_paths(data_dir):
     """Return a dict {image_id: path}, with exactly one path per image_id."""
-    # Find every .jpg anywhere under data_dir. Sorting makes the choice of
-    # copy the same on every run.
-    all_paths = sorted(glob.glob(os.path.join(data_dir, "**", "*.jpg"), recursive=True))
+    # Find every .jpg inside a *images_part_* folder (at any depth) under
+    # data_dir. Other folders, like the images_256 cache from preprocess.py,
+    # are ignored. Sorting makes the choice of copy the same on every run.
+    pattern = os.path.join(data_dir, "**", "*images_part_*", "*.jpg")
+    all_paths = sorted(glob.glob(pattern, recursive=True))
 
     paths = {}
     for p in all_paths:
