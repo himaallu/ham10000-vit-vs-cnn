@@ -86,7 +86,9 @@ def find_image_paths(data_dir):
 
 def age_to_band(age):
     """Turn an age in years (or NaN) into one of the 4 age bands."""
-    if pd.isna(age):
+    # Age 0 in HAM10000 almost certainly means "not recorded", not a newborn,
+    # so it counts as unknown. The raw age column is left unchanged.
+    if pd.isna(age) or age == 0:
         return "unknown"
     if age < 40:
         return "<40"

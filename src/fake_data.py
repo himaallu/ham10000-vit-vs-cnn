@@ -56,9 +56,13 @@ def make_metadata(n_lesions, rng):
 
         # Age, sex and site belong to the patient/lesion, so every image of
         # the same lesion shares them (as in the real data).
-        # About 10% of ages are missing (NaN), like in the real file.
-        if rng.random() < 0.1:
+        # About 10% of ages are missing (NaN) and about 5% are 0, like in the
+        # real file (where 0 really means "not recorded").
+        r = rng.random()
+        if r < 0.1:
             age = np.nan
+        elif r < 0.15:
+            age = 0.0
         else:
             age = float(rng.choice(np.arange(5, 90, 5)))  # real ages are multiples of 5
         sex = rng.choice(SEXES, p=[0.5, 0.45, 0.05])
