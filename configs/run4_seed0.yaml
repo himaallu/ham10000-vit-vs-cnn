@@ -1,0 +1,19 @@
+# Run 4: vit / image split / standard / seed 0
+run_name: run4_vit_image_standard_seed0
+model: vit            # vit | bit
+split: image         # lesion | image
+mode: standard       # standard | balanced | class_balanced
+seed: 0
+
+lr: 1.0e-4
+weight_decay: 0.05
+epochs: 15
+warmup_epochs: 1
+batch_size: 32
+patience: 5            # early stopping: epochs without val macro-F1 improvement
+min_cell_size: 10      # balanced mode only: smaller sampler cells are merged
+num_workers: 2
+
+data_dir: /content/data                       # metadata.csv and images_256/
+split_dir: /content/data                      # split_lesion.csv, split_image.csv
+out_root: /content/drive/MyDrive/ham10000_runs

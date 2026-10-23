@@ -13,4 +13,12 @@ Design (do not change without asking):
 - Metrics: overall macro-F1, per-class F1, melanoma recall; subgroups use malignant-vs-benign (mel, bcc, akiec = malignant) sensitivity and AUROC; bootstrap CIs resample lesions, not images.
 - Groups: age <40, 40-59, 60+, unknown; site: head_neck, trunk, upper_limb, lower_limb, other.
 
+Runs (keep this numbering — it matches the report; one config per run and seed in configs/):
+1 = BiT ResNet-50 / lesion split / standard   (seeds 0, 1, 2)
+2 = ViT-B/16      / lesion split / standard   (seeds 0, 1, 2)
+3 = BiT ResNet-50 / image split  / standard   (seed 0)
+4 = ViT-B/16      / image split  / standard   (seed 0)
+5 = ViT-B/16      / lesion split / balanced   (seeds 0, 1, 2)
+Optional 5b = ViT-B/16 / lesion split / class-only balanced sampler (seed 0), only if time allows.
+
 Rules: one task at a time; show a short plan before writing code; add a --smoke flag that runs on tiny fake data so code can be tested without the real dataset or a GPU.

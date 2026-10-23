@@ -60,6 +60,22 @@ rotation, random resized crop 224, flips, colour jitter; val/test: center crop
 224; mean/std from each timm model's config), checks one batch per partition
 and saves a grid of 8 augmented training images.
 
+## Training
+
+```bash
+python src/train.py --config configs/run1_seed0.yaml
+```
+
+One YAML per run and seed (runs 1-5 and 5b, see `CLAUDE.md`). Each run saves
+`best.pt`, `last.pt`, `history.csv`, `test_predictions.csv` and `summary.json`
+to `<out_root>/<run_name>/` (Google Drive by default). If Colab disconnects,
+run the same command again: it resumes from `last.pt`.
+
+Modes: `standard` = class-weighted cross-entropy; `balanced` = WeightedRandomSampler
+where every diagnosis gets an equal share and, inside a diagnosis, every
+age band x site group cell gets an equal share (cells under `min_cell_size`
+images are merged); `class_balanced` = the same sampler over diagnosis only.
+
 ## Smoke test (no dataset, no GPU)
 
 ```bash
@@ -71,3 +87,5 @@ images, same file layout and metadata columns as the real one) and builds
 `metadata.csv` from it. `python src/fake_data.py --out data_fake` makes only the
 fake data. `python src/splits.py --smoke` does the same and then splits it. `python src/preprocess.py --smoke` and `python src/dataset.py --smoke` run
 the chain up to the datasets.
+`python src/train.py --config configs/run5_seed0.yaml --smoke` trains 2 epochs
+on CPU with random weights (no download).

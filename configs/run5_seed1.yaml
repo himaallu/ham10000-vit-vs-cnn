@@ -1,0 +1,19 @@
+# Run 5: vit / lesion split / balanced / seed 1
+run_name: run5_vit_lesion_balanced_seed1
+model: vit            # vit | bit
+split: lesion         # lesion | image
+mode: balanced       # standard | balanced | class_balanced
+seed: 1
+
+lr: 1.0e-4
+weight_decay: 0.05
+epochs: 15
+warmup_epochs: 1
+batch_size: 32
+patience: 5            # early stopping: epochs without val macro-F1 improvement
+min_cell_size: 10      # balanced mode only: smaller sampler cells are merged
+num_workers: 2
+
+data_dir: /content/data                       # metadata.csv and images_256/
+split_dir: /content/data                      # split_lesion.csv, split_image.csv
+out_root: /content/drive/MyDrive/ham10000_runs

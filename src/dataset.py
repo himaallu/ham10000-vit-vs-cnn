@@ -29,12 +29,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
-# The two models we compare, as timm names. Both are pre-trained on
-# ImageNet-21k only (no ImageNet-1k fine-tuning).
-MODEL_NAMES = {
-    "vit": "vit_base_patch16_224.augreg_in21k",  # ViT-B/16
-    "bit": "resnetv2_50x1_bit.goog_in21k",       # BiT ResNet-50 (ResNetV2-50x1)
-}
+from models import MODEL_NAMES
 
 CROP_SIZE = 224
 

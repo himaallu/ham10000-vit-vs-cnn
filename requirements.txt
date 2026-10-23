@@ -7,3 +7,4 @@ matplotlib
 kaggle
 grad-cam
 torchvision
+pyyaml
