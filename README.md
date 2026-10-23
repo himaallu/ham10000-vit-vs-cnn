@@ -20,7 +20,8 @@ results/    Outputs (not committed; real runs save to Google Drive)
 ## Running on Colab
 
 Open `notebooks/run_colab.ipynb` in Colab (GPU runtime) and run it top to bottom.
-It mounts Drive, clones the repo, installs requirements, sets up `kaggle.json`,
+It mounts Drive, clones the repo, installs requirements, sets up the Kaggle key
+(a new `KGAT_` API token via Colab Secrets `KAGGLE_API_TOKEN` or upload, or an old `kaggle.json`),
 prepares the data once (cached on Drive in `MyDrive/ham10000_data`), offers a quick
 learning-rate check (train + val only) and trains the config you choose.
 
@@ -101,6 +102,7 @@ Reads every run's `test_predictions.csv` and writes to `<runs_root>/evaluation/`
 | `h2_seen_vs_unseen.csv` | H2: seen − unseen lesions inside the image-split runs |
 | `h3_subgroups.csv` | H3: malignant sensitivity/AUROC per age band, sex, site group; ViT vs BiT |
 | `h4_group_sensitivity.csv`, `h4_worst_group.csv` | H4: worst-group sensitivity and best−worst gap; balanced (run 5, 5b) − standard (run 2) |
+| `h4_excluded_groups.csv` | H4: subgroups left out of the worst-group analysis, with their malignant test counts and the reason |
 
 A model's value is the mean of the metric over its seeds. 95% CIs come from 1000
 bootstrap resamples of lesions (not images), shared by all runs on a test set, so

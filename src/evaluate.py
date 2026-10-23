@@ -12,6 +12,7 @@ written by train.py, and saves these tables to <runs_root>/evaluation/:
   h3_subgroups.csv          H3: malignant sensitivity/AUROC per subgroup, BiT vs ViT
   h4_group_sensitivity.csv  H4: malignant sensitivity per subgroup, standard vs balanced
   h4_worst_group.csv        H4: worst-group sensitivity and best-worst gap
+  h4_excluded_groups.csv    H4: subgroups left out of the worst-group analysis, and why
 
 Definitions
   malignant = mel, bcc, akiec.
@@ -335,6 +336,28 @@ def h3_subgroups(runs, test_sets):
     return pd.DataFrame(rows)
 
 
+def eligible_for_h4(ts, mask, min_malignant):
+    """H4 uses a subgroup only if it has at least min_malignant malignant test images."""
+    return np.isin(ts.y_true[mask], MAL_LABELS).sum() >= min_malignant
+
+
+def h4_excluded_groups(test_sets, min_malignant):
+    """Every subgroup left out of the H4 worst-group analysis, with its counts and reason."""
+    ts = test_sets["lesion"]
+    rows = []
+    for column, groups in SUBGROUPS.items():
+        for group in groups:
+            mask = ts.rows_where(column, group)
+            if mask.any() and eligible_for_h4(ts, mask, min_malignant):
+                continue
+            reason = (f"fewer than {min_malignant} malignant test images" if mask.any()
+                      else "no test images")
+            rows.append({"column": column, "group": group, **group_counts(ts, mask),
+                         "min_malignant": min_malignant, "reason": reason})
+    columns = ["column", "group", "n_images", "n_lesions", "n_malignant", "min_malignant", "reason"]
+    return pd.DataFrame(rows, columns=columns)  # keeps the header even if nothing is excluded
+
+
 def h4_balanced(runs, test_sets, min_malignant):
     """Worst-group sensitivity and best-worst gap: standard (run 2) vs balanced runs.
 
@@ -352,8 +375,7 @@ def h4_balanced(runs, test_sets, min_malignant):
     for column, groups in SUBGROUPS.items():
         masks = {g: ts.rows_where(column, g) for g in groups}
         masks = {g: m for g, m in masks.items() if m.any()}
-        eligible = [g for g, m in masks.items()
-                    if np.isin(ts.y_true[m], MAL_LABELS).sum() >= min_malignant]
+        eligible = [g for g, m in masks.items() if eligible_for_h4(ts, m, min_malignant)]
 
         def group_sens(run, r):
             """Sensitivity of every group, on resampled rows r."""
@@ -497,6 +519,7 @@ def main():
         groups, worst = h4_balanced(runs, test_sets, args.min_malignant)
         save(groups, "h4_group_sensitivity.csv")
         save(worst, "h4_worst_group.csv")
+        save(h4_excluded_groups(test_sets, args.min_malignant), "h4_excluded_groups.csv")
     else:
         print("H4 skipped: need run2 and run5 (or run5b)\n")
     print(f"Saved tables to {out_dir}")
