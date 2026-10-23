@@ -37,6 +37,7 @@ balanced sampler and copied into the predictions CSV for reporting.
 Usage (Colab):
     python src/train.py --config configs/run1_seed0.yaml
     python src/train.py --config configs/run5_seed0.yaml --smoke   # CPU, fake data
+    python src/train.py --config <yaml> --skip_test   # train + val only (lr check)
 """
 
 import argparse
@@ -294,6 +295,9 @@ def prepare_smoke(cfg):
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune one model from a YAML config.")
     parser.add_argument("--config", required=True)
+    parser.add_argument("--skip_test", action="store_true",
+                        help="don't predict the test set (for hyperparameter checks: "
+                             "choosing settings by test results would leak)")
     parser.add_argument("--smoke", action="store_true",
                         help="tiny fake data, random weights, 2 epochs on CPU")
     args = parser.parse_args()
@@ -402,6 +406,9 @@ def main():
             print(f"Early stopping: no improvement for {cfg['patience']} epochs.")
 
     pd.DataFrame(history).to_csv(os.path.join(out_dir, "history.csv"), index=False)
+    if args.skip_test:
+        print(f"--skip_test: done. Best val macro-F1 {best_f1:.4f} at epoch {best_epoch}.")
+        return
 
     # ---- Test predictions with the best weights ----
     model.load_state_dict(torch.load(best_path, map_location=device))
