@@ -68,7 +68,9 @@ python src/train.py --config configs/run1_seed0.yaml
 
 One YAML per run and seed (runs 1-5 and 5b, see `CLAUDE.md`). Each run saves
 `best.pt`, `last.pt`, `history.csv`, `test_predictions.csv` and `summary.json`
-to `<out_root>/<run_name>/` (Google Drive by default). If Colab disconnects,
+to `<out_root>/<run_name>/` (Google Drive by default). Balanced runs also print
+the sampler groups before and after merging and save `sampler_groups.csv`
+(group size, share, expected draws per epoch). If Colab disconnects,
 run the same command again: it resumes from `last.pt`.
 
 Modes: `standard` = class-weighted cross-entropy; `balanced` = WeightedRandomSampler

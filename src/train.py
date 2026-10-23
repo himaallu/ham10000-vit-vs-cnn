@@ -25,6 +25,8 @@ Output folder <out_root>/<run_name>/:
     best.pt              weights of the best epoch (by val macro-F1)
     last.pt              full training state, for resuming
     history.csv          one row per epoch: losses, val macro-F1, lr
+    sampler_groups.csv   balanced modes only: sampling groups after merging,
+                         their size, share and expected draws per epoch
     test_predictions.csv image_id, lesion_id, y_true, y_pred, prob_<class> x7,
                          age_band, sex, site_group, seen_lesion
     summary.json         best epoch, best val macro-F1, test macro-F1, mel recall
@@ -51,7 +53,7 @@ import yaml
 from sklearn.metrics import f1_score, recall_score
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
-from data import CLASSES
+from data import AGE_BANDS, CLASSES, SITE_ORDER
 from dataset import build_datasets
 from models import MODEL_NAMES, NUM_CLASSES, create_model
 
@@ -149,14 +151,45 @@ def sampler_weights(train_df, mode, min_cell_size):
     cells_in_dx = train_df["dx"].map(cell.groupby(train_df["dx"]).nunique())
     n_classes = train_df["dx"].nunique()
     weights = 1.0 / (n_classes * cells_in_dx * images_in_cell)
+    return torch.tensor(weights.to_numpy(), dtype=torch.double), cell
 
-    # Short report: how many cells each diagnosis ended up with.
-    print(f"Sampler ({mode}): {cell.nunique()} cells")
-    report = pd.DataFrame({"dx": train_df["dx"], "cell": cell})
-    per_dx = report.groupby("dx")["cell"].agg(cells="nunique")
-    per_dx["smallest_cell"] = report.groupby(["dx", "cell"]).size().groupby("dx").min()
-    print(per_dx.reindex(CLASSES).to_string())
-    return torch.tensor(weights.to_numpy(), dtype=torch.double)
+
+def sampler_report(train_df, cell, weights, mode, min_cell_size):
+    """Print group sizes before/after merging and the expected draws per epoch.
+
+    Returns the "after" table (one row per sampling group).
+    """
+    if mode == "balanced":
+        # Before merging: images per diagnosis x age band x site group.
+        before = pd.crosstab([train_df["dx"], train_df["age_band"]], train_df["site_group"])
+        rows = pd.MultiIndex.from_product([CLASSES, AGE_BANDS], names=["dx", "age_band"])
+        before = before.reindex(index=rows, columns=SITE_ORDER, fill_value=0)
+        print("\nSampler groups BEFORE merging (training images per dx x age band x site group):")
+        print(before.to_string())
+        sizes = before.to_numpy().ravel()
+        sizes = sizes[sizes > 0]  # only groups that actually have images
+        small = sizes[sizes < min_cell_size]
+        print(f"{len(sizes)} non-empty groups; {len(small)} have fewer than {min_cell_size} "
+              f"images ({small.sum()} images in total) and get merged.")
+
+    # After merging. The sampler draws len(train) images per epoch, and a
+    # group's chance of being drawn is the sum of its images' weights, so:
+    #   expected draws per epoch = len(train) * group weight / total weight
+    n_draws = len(train_df)
+    group_weight = pd.Series(weights.numpy(), index=cell.index).groupby(cell).sum()
+    after = pd.DataFrame({"images": cell.value_counts()})
+    after["share"] = group_weight / group_weight.sum()
+    after["expected_per_epoch"] = after["share"] * n_draws
+    # > 1 means the group's images are repeated within an epoch; < 1 means
+    # some of its images are not seen in a given epoch.
+    after["draws_per_image"] = after["expected_per_epoch"] / after["images"]
+    after = after.sort_index()
+    after.index.name = "group"
+
+    print(f"\nSampler groups AFTER merging ({mode}): {len(after)} groups, "
+          f"{n_draws} draws per epoch")
+    print(after.to_string(float_format=lambda x: f"{x:.3f}"))
+    return after
 
 
 # ----------------------------------------------------------------------------
@@ -299,7 +332,9 @@ def main():
         # Plain CE; the sampler does the balancing. It draws len(train) images
         # per epoch WITH replacement, so rare cells appear several times.
         criterion = torch.nn.CrossEntropyLoss()
-        weights = sampler_weights(train_df, cfg["mode"], cfg["min_cell_size"])
+        weights, cell = sampler_weights(train_df, cfg["mode"], cfg["min_cell_size"])
+        groups = sampler_report(train_df, cell, weights, cfg["mode"], cfg["min_cell_size"])
+        groups.to_csv(os.path.join(out_dir, "sampler_groups.csv"))
         sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True,
                                         generator=g)
         train_loader = DataLoader(datasets["train"], batch_size=cfg["batch_size"], sampler=sampler,
