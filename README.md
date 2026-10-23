@@ -107,6 +107,20 @@ bootstrap resamples of lesions (not images), shared by all runs on a test set, s
 model differences use a paired bootstrap. H4 only uses groups with at least 10
 malignant test images (`--min_malignant`).
 
+## Figures and Grad-CAM
+
+```bash
+python src/figures.py --runs_root /content/drive/MyDrive/ham10000_runs --data_dir /content/data
+python src/gradcam.py --runs_root /content/drive/MyDrive/ham10000_runs --image_dir /content/data/images_256
+```
+
+`figures.py` saves to `<runs_root>/figures/`: class distribution, leakage counts,
+confusion matrices (seed 0 of each run), H3 and H4 subgroup charts (dots with 95%
+CIs; needs `evaluate.py` first) and training curves. `gradcam.py` picks 6 test
+images (melanoma correct / wrong / disagreement, a false melanoma alarm, two correct
+benign lesions) and shows each image with BiT and ViT Grad-CAM for the predicted
+class; it needs the seed-0 `best.pt` of runs 1 and 2.
+
 ## Smoke test (no dataset, no GPU)
 
 ```bash
@@ -120,4 +134,5 @@ fake data. `python src/splits.py --smoke` does the same and then splits it. `pyt
 the chain up to the datasets.
 `python src/train.py --config configs/run5_seed0.yaml --smoke` trains 2 epochs
 on CPU with random weights (no download). `python src/evaluate.py --smoke` evaluates fake
-predictions for all runs.
+predictions for all runs. `python src/figures.py --smoke` and
+`python src/gradcam.py --smoke` make the figures from fake data.
