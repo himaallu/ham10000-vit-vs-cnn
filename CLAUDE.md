@@ -7,6 +7,9 @@ Design (do not change without asking):
 - Splits: (a) lesion-level 70/15/15 grouped by lesion_id, stratified by diagnosis; (b) image-level 70/15/15 stratified by diagnosis. Fixed seed, saved to CSV.
 - Augmentation only on the training set, on the fly, after splitting.
 - Standard training = class-weighted cross-entropy. Balanced training = WeightedRandomSampler over diagnosis x age band x site group (sparse cells merged), plain cross-entropy.
+  - Sampler rule: each diagnosis gets an equal share (1/7); inside a diagnosis, each age band x site group cell gets an equal share; images inside a cell are equally likely.
+  - Merging cells under min_cell_size (10) training images: first drop site (dx|age|any); if still too small, drop age (dx|any|any); if that leftover is still too small, it joins the largest cell of the same diagnosis.
+  - Class-only balanced sampler (run 5b) = same sampler with diagnosis-only cells.
 - Age, sex, site are NEVER model inputs — only for sampling and reporting.
 - Model selection: best validation macro-F1, early stopping.
 - Every run saves predictions CSV: image_id, lesion_id, y_true, y_pred, 7 class probabilities, age_band, sex, site_group, seen_lesion flag.
