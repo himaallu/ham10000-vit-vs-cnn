@@ -208,6 +208,16 @@ def dot_ci_panel(ax, groups, series, labels):
     ax.set_axisbelow(True)
 
 
+def legend_above(fig, ax, title, height_in):
+    """Title, then one shared legend row, above the panels (never on top of the data)."""
+    handles, labels = ax.get_legend_handles_labels()
+    top = 1 - 0.75 / height_in           # leave ~0.75 inch for the title and the legend
+    fig.tight_layout(rect=(0, 0, 1, top))  # lay out the panels first, then add title and legend
+    fig.suptitle(title, x=0.01, y=0.995, ha="left", va="top", fontsize=10)
+    fig.legend(handles, labels, loc="lower left", bbox_to_anchor=(0.01, top), ncol=len(labels),
+               frameon=False, fontsize=8, handletextpad=0.3, columnspacing=1.5)
+
+
 def h3_subgroups(eval_dir, out_dir):
     """Malignant sensitivity and AUROC per subgroup: BiT vs ViT."""
     path = os.path.join(eval_dir, "h3_subgroups.csv")
@@ -231,10 +241,8 @@ def h3_subgroups(eval_dir, out_dir):
             if row == 0:
                 ax.set_title(GROUP_TITLES[column], loc="left")
         axes[row, 0].set_ylabel("Malignant sensitivity" if metric == "sensitivity" else "Malignant AUROC")
-    axes[0, 0].legend(loc="lower left", fontsize=8)
-    fig.suptitle("H3: malignant vs benign by subgroup (mean over seeds, 95% lesion-bootstrap CI)\n"
-                 "n = malignant test images in the group", x=0.01, ha="left", fontsize=10)
-    fig.tight_layout()
+    legend_above(fig, axes[0, 0], "H3: malignant vs benign by subgroup (mean over seeds, 95% lesion-bootstrap CI)\n"
+                 "n = malignant test images in the group", height_in=6)
     save(fig, out_dir, "h3_subgroups.png")
 
 
@@ -265,11 +273,8 @@ def h4_subgroups(eval_dir, out_dir):
         dot_ci_panel(ax, list(first["group"]), series, labels)
         ax.set_title(GROUP_TITLES[column], loc="left")
     axes[0, 0].set_ylabel("Malignant sensitivity")
-    axes[0, 0].legend(loc="lower left", fontsize=8)
-    fig.suptitle("H4: malignant sensitivity by subgroup, standard vs balanced training (ViT, lesion split)\n"
-                 "n = malignant test images; * = too few to count in the worst-group analysis",
-                 x=0.01, ha="left", fontsize=10)
-    fig.tight_layout()
+    legend_above(fig, axes[0, 0], "H4: malignant sensitivity by subgroup, standard vs balanced training (ViT, lesion split)\n"
+                 "n = malignant test images; * = too few to count in the worst-group analysis", height_in=3.4)
     save(fig, out_dir, "h4_subgroups.png")
 
 
