@@ -1,0 +1,4 @@
+column,group,n_images,n_lesions,n_malignant,min_malignant,reason
+age_band,unknown,14,10,0,10,fewer than 10 malignant test images
+sex,unknown,6,6,0,10,fewer than 10 malignant test images
+site_group,other,44,40,0,10,fewer than 10 malignant test images

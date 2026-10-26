@@ -1,0 +1,14 @@
+GPU: Tesla T4
+                                  run model  minutes  epochs
+       run1_bit_lesion_standard_seed0   bit        0      15
+       run1_bit_lesion_standard_seed1   bit       19      15
+       run1_bit_lesion_standard_seed2   bit       19      15
+       run2_vit_lesion_standard_seed0   vit       25      15
+       run2_vit_lesion_standard_seed1   vit       27      15
+       run2_vit_lesion_standard_seed2   vit       26      15
+        run3_bit_image_standard_seed0   bit       19      15
+        run4_vit_image_standard_seed0   vit       26      15
+       run5_vit_lesion_balanced_seed0   vit       26      15
+       run5_vit_lesion_balanced_seed1   vit       26      15
+       run5_vit_lesion_balanced_seed2   vit       27      15
+run5b_vit_lesion_class_balanced_seed0   vit       25      15
