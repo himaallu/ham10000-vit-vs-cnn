@@ -114,6 +114,7 @@ malignant test images (`--min_malignant`).
 ```bash
 python src/figures.py --runs_root /content/drive/MyDrive/ham10000_runs --data_dir /content/data
 python src/gradcam.py --runs_root /content/drive/MyDrive/ham10000_runs --image_dir /content/data/images_256
+python src/sample_outputs.py --runs_root /content/drive/MyDrive/ham10000_runs --image_dir /content/data/images_256
 ```
 
 `figures.py` saves to `<runs_root>/figures/`: class distribution, leakage counts,
@@ -122,6 +123,20 @@ CIs; needs `evaluate.py` first) and training curves. `gradcam.py` picks 6 test
 images (melanoma correct / wrong / disagreement, a false melanoma alarm, two correct
 benign lesions) and shows each image with BiT and ViT Grad-CAM for the predicted
 class; it needs the seed-0 `best.pt` of runs 1 and 2.
+`sample_outputs.py` draws 8 lesion-split test images (2 x 4 grid: melanoma correct /
+wrong / disagreement, a malignant lesion under 40, a missed bcc/akiec, a false
+melanoma alarm, two correct benign lesions) with the true label, age band, and ViT and
+BiT predictions with confidence (seed 0); it needs only the test predictions.
+
+## Results
+
+`results/` holds the final outputs of all 12 runs, copied from Google Drive:
+
+| Folder | Contents |
+|---|---|
+| `results/evaluation/` | the 9 tables from `evaluate.py` (Table 1, H1–H4, excluded groups) |
+| `results/figures/` | class distribution, leakage counts, confusion matrices, H3/H4 subgroup charts, training curves, Grad-CAM (`gradcam.png` + `gradcam_images.csv`) and sample outputs (`sample_outputs.png` + `.csv`) |
+| `results/logs/` | Colab output of the learning-rate check and the run times (Tesla T4) |
 
 ## Smoke test (no dataset, no GPU)
 
@@ -137,4 +152,4 @@ the chain up to the datasets.
 `python src/train.py --config configs/run5_seed0.yaml --smoke` trains 2 epochs
 on CPU with random weights (no download). `python src/evaluate.py --smoke` evaluates fake
 predictions for all runs. `python src/figures.py --smoke` and
-`python src/gradcam.py --smoke` make the figures from fake data.
+`python src/gradcam.py --smoke` and `python src/sample_outputs.py --smoke` make the figures from fake data.

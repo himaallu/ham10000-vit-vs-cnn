@@ -1,0 +1,7 @@
+case,image_id,lesion_id,y_true,y_pred_bit,conf_bit,y_pred_vit,conf_vit
+"melanoma, both correct",ISIC_0033286,HAM_0005758,4,4,0.9997992,4,0.99985147
+"melanoma, both wrong",ISIC_0025277,HAM_0002720,4,2,0.9868498,2,0.99959487
+"melanoma, models disagree",ISIC_0033520,HAM_0006462,4,4,0.975217,5,0.9431851
+benign called melanoma,ISIC_0032775,HAM_0003862,6,4,0.9683479,4,0.98375165
+"other benign (not nv), both correct",ISIC_0033991,HAM_0006852,6,6,0.9999715,6,0.99998796
+"nv, both correct",ISIC_0026144,HAM_0000023,5,5,0.9999976,5,0.9999995

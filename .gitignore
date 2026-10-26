@@ -3,6 +3,12 @@ data/
 data_fake/
 results/*
 !results/.gitkeep
+# Final results are kept: evaluation tables, figures, run logs
+!results/evaluation/
+!results/figures/
+!results/logs/
+# Report draft stays local until it is submitted (similarity checking)
+report/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
